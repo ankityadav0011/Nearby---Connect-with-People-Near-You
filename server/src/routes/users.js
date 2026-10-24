@@ -1,14 +1,46 @@
 import { Router } from "express";
 import multer from "multer";
-import path from "path";
-import fs from "fs";
+import { v2 as cloudinary } from "cloudinary";
 import User from "../models/User.js";
 import Swipe from "../models/Swipe.js";
 import Block from "../models/Block.js";
 import Match from "../models/Match.js";
 import Message from "../models/Message.js";
 import { requireAuth } from "../middleware/auth.js";
-import { ah, ageFromDob, publicUser, uploadDir } from "../utils.js";
+import { ah, ageFromDob, publicUser } from "../utils.js";
+
+// Cloudinary keeps profile photos permanently (Render's disk is wiped on restart/deploy)
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
+function uploadToCloudinary(buffer, userId) {
+  return new Promise((resolve, reject) => {
+    cloudinary.uploader
+      .upload_stream(
+        {
+          folder: "nearby/profiles",
+          public_id: `${userId}-${Date.now()}`,
+          resource_type: "image",
+          // crop to the 3:4 card shape, centered on the face, and compress
+          transformation: [
+            { width: 800, height: 1067, crop: "fill", gravity: "face" },
+            { quality: "auto", fetch_format: "auto" },
+          ],
+        },
+        (err, result) => (err ? reject(err) : resolve(result))
+      )
+      .end(buffer);
+  });
+}
+
+// Deletes an old photo from Cloudinary (old local "/uploads/..." links are ignored)
+function removeFromCloudinary(url) {
+  const m = url?.match(/\/upload\/(?:v\d+\/)?(.+)\.[a-z0-9]+$/i);
+  if (m) cloudinary.uploader.destroy(m[1]).catch(() => {});
+}
 
 const router = Router();
 router.use(requireAuth);
@@ -16,10 +48,7 @@ const GENDERS = ["man", "woman", "nonbinary"];
 
 const EXT = { "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp" };
 const upload = multer({
-  storage: multer.diskStorage({
-    destination: uploadDir,
-    filename: (req, file, cb) => cb(null, `${req.user.id}-${Date.now()}${EXT[file.mimetype]}`),
-  }),
+  storage: multer.memoryStorage(), // keep the file in memory, then send it to Cloudinary
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (EXT[file.mimetype]) return cb(null, true);
@@ -60,10 +89,11 @@ router.put("/me", ah(async (req, res) => {
 // The one and only photo shown on the swipe card
 router.post("/me/photo", upload.single("photo"), ah(async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No image received" });
+  const result = await uploadToCloudinary(req.file.buffer, req.user.id);
   const old = req.user.profilePhotoUrl;
-  req.user.profilePhotoUrl = `/uploads/${req.file.filename}`;
+  req.user.profilePhotoUrl = result.secure_url;
   await req.user.save();
-  if (old?.startsWith("/uploads/")) fs.unlink(path.join(uploadDir, path.basename(old)), () => {});
+  removeFromCloudinary(old);
   res.json({ user: publicUser(req.user) });
 }));
 
@@ -141,8 +171,7 @@ router.delete("/me", ah(async (req, res) => {
     Swipe.deleteMany({ $or: [{ from: id }, { to: id }] }),
     Block.deleteMany({ $or: [{ from: id }, { to: id }] }),
   ]);
-  const photo = req.user.profilePhotoUrl;
-  if (photo?.startsWith("/uploads/")) fs.unlink(path.join(uploadDir, path.basename(photo)), () => {});
+  removeFromCloudinary(req.user.profilePhotoUrl);
   await User.deleteOne({ _id: id });
   res.json({ ok: true });
 }));
