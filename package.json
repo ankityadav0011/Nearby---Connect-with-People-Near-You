@@ -6,6 +6,7 @@
     "dev": "concurrently -n api,web -c blue,green \"npm run dev --prefix server\" \"npm run dev --prefix client\""
   },
   "devDependencies": {
-    "concurrently": "^8.2.2"
+    "concurrently": "^8.2.2",
+    "cloudinary": "^2.0.0",
   }
 }
