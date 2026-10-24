@@ -3,7 +3,16 @@ import jwt from "jsonwebtoken";
 import Match from "./models/Match.js";
 
 export function initSocket(server, origins) {
-  const io = new Server(server, { cors: { origin: origins } });
+  const io = new Server(server, {
+  cors: {
+    origin: [
+      "http://localhost:5173",
+      "https://nearby-connect-with-people-near-you-1.onrender.com",
+    ],
+    methods: ["GET", "POST"],
+    credentials: true,
+  },
+});
 
   // Logged-out visitors may connect too (so they are counted as "online"); logged-in ones get a private room
   io.use((socket, next) => {
